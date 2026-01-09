@@ -13,12 +13,13 @@ from bs4 import BeautifulSoup
 SITEMAP_URL = "https://www.visitzuidlimburg.nl/sitemap.xml"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; VisitZuidLimburgScraper/5.0; +https://github.com/)",
+    "User-Agent": "Mozilla/5.0 (compatible; VisitZuidLimburgScraper/6.0; +https://github.com/)",
     "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
 }
 
 KEYWORDS = [
-    "direct boeken", "boek nu", "boeken", "reserveren", "naar de website", "website", "booking", "reserveer", "book"
+    "direct boeken", "boek nu", "boeken", "reserveren", "naar de website", "website",
+    "booking", "reserveer", "book"
 ]
 
 DATA_ATTRS = [
@@ -153,7 +154,7 @@ def fetch_rendered_html(url: str, timeout_ms: int):
         return html
 
 def should_enrich(url: str) -> bool:
-    # Alleen zinvol op detail/overnachten. U krijgt WEL alle records in CSV, maar niet overal extra calls.
+    # U krijgt ALLE records in CSV, maar extra "enrich" calls alleen waar kans reëel is.
     return ("/detail/" in url) or ("/overnachten/" in url)
 
 def main():
