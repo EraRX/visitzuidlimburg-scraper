@@ -1,4 +1,3 @@
-cat > main.py <<'PY'
 import argparse, csv, re, time
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
