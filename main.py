@@ -1,8 +1,5 @@
 cat > main.py <<'PY'
-import argparse
-import csv
-import re
-import time
+import argparse, csv, re, time
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 import xml.etree.ElementTree as ET
@@ -13,19 +10,12 @@ from bs4 import BeautifulSoup
 SITEMAP_URL = "https://www.visitzuidlimburg.nl/sitemap.xml"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; VisitZuidLimburgScraper/6.0; +https://github.com/)",
+    "User-Agent": "Mozilla/5.0 (compatible; VisitZuidLimburgScraper/FINAL; +https://github.com/)",
     "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
 }
 
-KEYWORDS = [
-    "direct boeken", "boek nu", "boeken", "reserveren", "naar de website", "website",
-    "booking", "reserveer", "book"
-]
-
-DATA_ATTRS = [
-    "data-href", "data-url", "data-link", "data-booking", "data-booking-url",
-    "data-external-url", "data-cta-url", "data-target-url", "data-redirect", "data-redirect-url"
-]
+KEYWORDS = ["direct boeken","boek nu","boeken","reserveren","naar de website","website","booking","reserveer","book"]
+DATA_ATTRS = ["data-href","data-url","data-link","data-booking","data-booking-url","data-external-url","data-cta-url","data-target-url","data-redirect","data-redirect-url"]
 
 @dataclass
 class Row:
@@ -37,8 +27,8 @@ class Row:
     outbound_url: str
     outbound_source: str  # none|html|rendered|error
 
-def fetch_text(session: requests.Session, url: str, timeout: int) -> str:
-    r = session.get(url, headers=HEADERS, timeout=timeout)
+def fetch_text(s: requests.Session, url: str, timeout: int) -> str:
+    r = s.get(url, headers=HEADERS, timeout=timeout)
     r.raise_for_status()
     return r.text
 
@@ -55,7 +45,7 @@ def parse_sitemap(xml_text: str):
     out = []
     for u in root.findall(q("url")):
         loc = u.find(q("loc"))
-        lm = u.find(q("lastmod"))
+        lm  = u.find(q("lastmod"))
         url = (loc.text or "").strip() if loc is not None else ""
         lastmod = (lm.text or "").strip() if lm is not None else ""
         if url:
@@ -97,11 +87,8 @@ def name_from_url(url: str) -> str:
     return " ".join("B&B" if w.lower() in {"bb","b&b","benb"} else w.capitalize() for w in slug.split())
 
 def is_external(u: str) -> bool:
-    try:
-        host = urlparse(u).netloc.lower()
-        return bool(host) and "visitzuidlimburg.nl" not in host
-    except Exception:
-        return False
+    host = urlparse(u).netloc.lower()
+    return bool(host) and "visitzuidlimburg.nl" not in host
 
 def find_outbound(soup: BeautifulSoup, base_url: str):
     # 1) <a href> met knoptekst
@@ -139,22 +126,21 @@ def find_outbound(soup: BeautifulSoup, base_url: str):
     return ("", "")
 
 def extract_outbound(html: str, base_url: str):
-    soup = BeautifulSoup(html, "lxml")
-    return find_outbound(soup, base_url)
+    return find_outbound(BeautifulSoup(html, "lxml"), base_url)
 
 def fetch_rendered_html(url: str, timeout_ms: int):
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        b = p.chromium.launch(headless=True)
+        page = b.new_page()
         page.goto(url, wait_until="networkidle", timeout=timeout_ms)
         page.wait_for_timeout(800)
         html = page.content()
-        browser.close()
+        b.close()
         return html
 
 def should_enrich(url: str) -> bool:
-    # U krijgt ALLE records in CSV, maar extra "enrich" calls alleen waar kans reëel is.
+    # Alle records in CSV, maar extra calls alleen waar kans reëel is
     return ("/detail/" in url) or ("/overnachten/" in url)
 
 def main():
@@ -168,48 +154,46 @@ def main():
     ap.add_argument("--render-timeout", type=int, default=60000)
     args = ap.parse_args()
 
-    session = requests.Session()
+    print("### RUNNING main.py (NO HOTEL FILTER) ###")
 
-    print("Sitemap ophalen…")
-    xml = fetch_text(session, SITEMAP_URL, timeout=args.timeout)
+    s = requests.Session()
+    xml = fetch_text(s, SITEMAP_URL, timeout=args.timeout)
     entries = parse_sitemap(xml)
 
     if args.limit and args.limit > 0:
         entries = entries[:args.limit]
 
     print(f"Aantal sitemap records: {len(entries)}")
+    if entries:
+        print("Eerste URL:", entries[0][0])
 
     rows = []
     for i, (url, lastmod) in enumerate(entries, start=1):
         rtype = classify(url)
         naam = name_from_url(url)
 
-        label = ""
-        outurl = ""
-        source = "none"
+        label, outurl, source = "", "", "none"
 
         if args.enrich and should_enrich(url):
             try:
-                html = fetch_text(session, url, timeout=args.timeout)
+                html = fetch_text(s, url, timeout=args.timeout)
                 label, outurl = extract_outbound(html, url)
                 source = "html" if outurl else "none"
 
-                if args.js and not outurl and "/detail/" in url:
+                if args.js and (not outurl) and "/detail/" in url:
                     rh = fetch_rendered_html(url, timeout_ms=args.render_timeout)
                     label, outurl = extract_outbound(rh, url)
                     source = "rendered" if outurl else source
 
             except Exception as e:
-                label = "ERROR"
-                outurl = f"{type(e).__name__}: {e}"
-                source = "error"
+                label, outurl, source = "ERROR", f"{type(e).__name__}: {e}", "error"
 
             time.sleep(max(0.0, args.delay))
 
-        if i % 100 == 0:
-            print(f"… verwerkt: {i}/{len(entries)}")
-
         rows.append(Row(url, lastmod, rtype, naam, label, outurl, source))
+
+        if i % 200 == 0:
+            print(f"… verwerkt: {i}/{len(entries)}")
 
     print(f"CSV schrijven: {args.out}")
     with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
@@ -223,4 +207,3 @@ def main():
 if __name__ == "__main__":
     main()
 PY
-
