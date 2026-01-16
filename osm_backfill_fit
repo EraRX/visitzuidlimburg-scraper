@@ -1,35 +1,24 @@
-#!/usr/bin/env python3
-# osm_backfill_fit.py
-# Doel: websites aanvullen vanuit OpenStreetMap (via Overpass) op basis van osm_id + osm_type_guess.
-# Output (AVG-proof, geen extra velden): limburg,categorie,subcategorie,naam,stad,website
-#
-# Gebruik:
-#   python osm_backfill_fit.py --in FIT.csv --out FIT_osm_aangevuld.csv
-#
-# Opmerking:
-# - Leest jouw FIT.csv als ; gescheiden en cp1252 (zoals je upload).
-# - Vult alleen aan waar website/url leeg is.
-# - Haalt tags op en pakt: website > contact:website > url
-#
-import argparse
-import csv
-import json
-import time
-from pathlib import Path
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
-
-OVERPASS = "https://overpass-api.de/api/interpreter"
-OUT_COLS = ["limburg", "categorie", "subcategorie", "naam", "stad", "website"]
-
-def is_empty_url(s: str) -> bool:
-    s = (s or "").strip()
-    return (not s) or (s.lower() in {"nan", "none", "null", "-", "nvt", "n.v.t."})
-
 def read_fit(path: Path):
-    # jouw bestand: ; gescheiden, cp1252
     import pandas as pd
-    df = pd.read_csv(path, sep=";", encoding="cp1252")
+
+    # Probeer meerdere encodings; dit voorkomt de charmap/0x9d fout
+    encodings = ["utf-8", "utf-8-sig", "cp1252", "latin1"]
+    last_err = None
+
+    for enc in encodings:
+        try:
+            df = pd.read_csv(path, sep=";", encoding=enc)
+            break
+        except Exception as e:
+            last_err = e
+            df = None
+
+    # Als alles faalt: lees als bytes en decodeer "fouttolerant"
+    if df is None:
+        raw = path.read_bytes()
+        text = raw.decode("latin1", errors="replace")
+        from io import StringIO
+        df = pd.read_csv(StringIO(text), sep=";")
 
     required = ["category", "type", "naam_afgeleid", "city", "url", "osm_id", "osm_type_guess"]
     for c in required:
@@ -46,109 +35,6 @@ def read_fit(path: Path):
             "stad": str(r.get("city") or "").strip(),
             "website": str(r.get("url") or "").strip(),
             "osm_id": str(r.get("osm_id") or "").strip(),
-            "osm_type": str(r.get("osm_type_guess") or "").strip().lower(),  # node/way/relation
+            "osm_type": str(r.get("osm_type_guess") or "").strip().lower(),
         })
     return rows
-
-def overpass_fetch_tags(batch):
-    parts = []
-    for b in batch:
-        t = b["osm_type"]
-        oid = (b["osm_id"] or "").replace(".0", "")
-        if not oid.isdigit():
-            continue
-        if t not in {"node", "way", "relation"}:
-            continue
-        parts.append(f"{t}({oid});")
-
-    if not parts:
-        return {}
-
-    q = f"""[out:json][timeout:180];
-(
-  {' '.join(parts)}
-);
-out tags;
-"""
-    data = urlencode({"data": q}).encode("utf-8")
-    req = Request(OVERPASS, data=data, headers={"User-Agent": "fitlimburg-backfill/1.0"})
-    with urlopen(req, timeout=240) as r:
-        raw = r.read().decode("utf-8", errors="replace")
-    js = json.loads(raw)
-
-    tagmap = {}
-    for el in js.get("elements", []):
-        tagmap[(el.get("type"), str(el.get("id")))] = el.get("tags", {}) or {}
-    return tagmap
-
-def pick_website(tags):
-    for k in ("website", "contact:website", "url"):
-        v = (tags.get(k) or "").strip()
-        if v:
-            if v.startswith("www."):
-                v = "https://" + v
-            return v
-    return ""
-
-def write_out(path: Path, rows):
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=OUT_COLS)
-        w.writeheader()
-        for r in rows:
-            w.writerow({k: r.get(k, "") for k in OUT_COLS})
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--in", dest="inp", required=True, help="Jouw FIT.csv (bronbestand)")
-    ap.add_argument("--out", dest="out", default="FIT_osm_aangevuld.csv", help="Output CSV (AVG-proof)")
-    ap.add_argument("--batch", type=int, default=250, help="Aantal OSM objecten per Overpass-call")
-    ap.add_argument("--sleep", type=float, default=1.0, help="Pauze tussen calls (seconden)")
-    args = ap.parse_args()
-
-    rows = read_fit(Path(args.inp))
-
-    missing = [r for r in rows if is_empty_url(r["website"]) and r["osm_id"] and r["osm_type"]]
-    print(f"Totaal rijen: {len(rows)} | Zonder website: {len(missing)}")
-
-    filled = 0
-    for i in range(0, len(missing), args.batch):
-        batch = missing[i:i + args.batch]
-
-        # retry max 2x
-        tagmap = {}
-        for attempt in range(1, 3):
-            try:
-                tagmap = overpass_fetch_tags(batch)
-                break
-            except Exception as e:
-                if attempt == 2:
-                    print(f"[WARN] Batch {i}-{i + len(batch)} faalde: {e}")
-                else:
-                    time.sleep(2.0)
-
-        for r in batch:
-            oid = (r["osm_id"] or "").replace(".0", "")
-            t = r["osm_type"]
-            tags = tagmap.get((t, oid), {})
-            w = pick_website(tags)
-            if w and is_empty_url(r["website"]):
-                r["website"] = w
-                filled += 1
-
-        print(f"Batch {i//args.batch + 1}: aangevuld {filled} (cumulatief)")
-        time.sleep(args.sleep)
-
-    out_rows = [{
-        "limburg": "Limburg",
-        "categorie": r["categorie"],
-        "subcategorie": r["subcategorie"],
-        "naam": r["naam"],
-        "stad": r["stad"],
-        "website": "" if is_empty_url(r["website"]) else r["website"],
-    } for r in rows]
-
-    write_out(Path(args.out), out_rows)
-    print(f"Klaar. Output: {args.out}")
-
-if __name__ == "__main__":
-    main()
