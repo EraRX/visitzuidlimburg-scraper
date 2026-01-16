@@ -2,7 +2,7 @@ def read_fit(path: Path):
     import pandas as pd
 
     # Probeer meerdere encodings; dit voorkomt de charmap/0x9d fout
-    encodings = ["utf-8", "utf-8-sig", "cp1252", "latin1"]
+    pd.read_csv(path, sep=";", encoding="latin1")
     last_err = None
 
     for enc in encodings:
