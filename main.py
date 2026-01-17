@@ -1,62 +1,111 @@
+#!/usr/bin/env python3
 # main.py
 #
-# Centrale regisseur voor het verzamelen van bedrijfsdata
-# Output: naam, plaats, website, categorie
-# Geen VVV / booking / affiliate links
-# Geen vergelijkingen, geen deduplicatie
+# Leest FIT.csv en schrijft output/data.csv met exact 4 velden:
+# naam, plaats, website, categorie
+#
+# Geen extra velden of functies (AVG-minimaal).
+# Filtert ongewenste platform/redirect links (VVV/booking etc.).
 
-from sources import osm, visitzl, eetnu
-from utils.normalise import normalise_record
-from utils.filters import is_valid
 import csv
-from config import (
-    USE_OSM,
-    USE_VISITZL,
-    USE_EETNU,
-    OUTPUT_FILE
-)
+import os
+import re
+from urllib.parse import urlparse
+
+INPUT_FILE = "FIT.csv"
+OUTPUT_FILE = "output/data.csv"
+
+FIELDNAMES_OUT = ["naam", "plaats", "website", "categorie"]
 
 
-def collect_all():
-    records = []
+def clean_text(s: str) -> str:
+    return (s or "").strip()
 
-    if USE_OSM:
-        print("▶ OSM verzamelen...")
-        records.extend(osm.collect())
 
-    if USE_VISITZL:
-        print("▶ VisitZuidLimburg verzamelen...")
-        records.extend(visitzl.collect())
+def clean_url(u: str) -> str:
+    u = (u or "").strip()
+    if not u:
+        return ""
+    # verwijder tracking
+    u = re.sub(r"\?.*$", "", u)
+    return u.rstrip("/")
 
-    if USE_EETNU:
-        print("▶ Eet.nu verzamelen...")
-        records.extend(eetnu.collect())
 
-    return records
+def domain(u: str) -> str:
+    try:
+        return urlparse(u).netloc.lower()
+    except Exception:
+        return ""
+
+
+def is_bad_website(u: str) -> bool:
+    if not u:
+        return True
+
+    d = domain(u)
+    bad_domains = [
+        "vvnnederland.nl",
+        "visitzuidlimburg.nl",
+        "booking.com",
+        "hotels.com",
+        "expedia.",
+        "airbnb.",
+        "facebook.com",
+        "instagram.com",
+        "tiktok.com",
+        "tripadvisor.",
+        "thefork.",
+        "resengo.",
+        "couverts.",
+    ]
+
+    for b in bad_domains:
+        if b in d:
+            return True
+
+    return False
 
 
 def main():
-    raw_records = collect_all()
-    print(f"Totaal opgehaald (ruw): {len(raw_records)}")
+    # output map maken
+    os.makedirs(os.path.dirname(OUTPUT_FILE) or ".", exist_ok=True)
 
-    clean_records = []
+    # FIT.csv lezen (puntkomma)
+    with open(INPUT_FILE, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f, delimiter=";")
+        rows = list(reader)
 
-    for r in raw_records:
-        r = normalise_record(r)
-        if is_valid(r):
-            clean_records.append(r)
+    out_rows = []
+    for r in rows:
+        naam = clean_text(r.get("naam_afgeleid") or r.get("name") or r.get("naam") or "")
+        plaats = clean_text(r.get("city") or r.get("plaats") or "")
+        website = clean_url(r.get("url") or r.get("website") or "")
+        categorie = clean_text(r.get("category") or r.get("categorie") or "")
 
-    print(f"Na filtering: {len(clean_records)}")
+        # Alleen bewaren als we minimaal naam+plaats hebben
+        if not naam or not plaats:
+            continue
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["naam", "plaats", "website", "categorie"]
+        # Website mag leeg zijn, maar als hij gevuld is: filter redirect/platform
+        if website and is_bad_website(website):
+            website = ""
+
+        out_rows.append(
+            {
+                "naam": naam,
+                "plaats": plaats,
+                "website": website,
+                "categorie": categorie,
+            }
         )
-        writer.writeheader()
-        writer.writerows(clean_records)
 
-    print(f"✔ Output geschreven naar: {OUTPUT_FILE}")
+    # schrijven
+    with open(OUTPUT_FILE, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDNAMES_OUT)
+        w.writeheader()
+        w.writerows(out_rows)
+
+    print(f"Klaar. In: {len(rows)} regels, Uit: {len(out_rows)} regels -> {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
